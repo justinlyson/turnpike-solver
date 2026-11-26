@@ -1,0 +1,285 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}[lemma]{Theorem}
+\newtheorem{proposition}[lemma]{Proposition}
+\newtheorem{conjecture}[lemma]{Conjecture}
+\theoremstyle{definition}
+\newtheorem{definition}[lemma]{Definition}
+
+\newcommand{\repourl}{\url{https://github.com/justinlyson/turnpike-solver}}
+\newcommand{\Z}{\mathbb{Z}}
+\DeclareMathOperator{\supp}{supp}
+
+\title{A Layered, Certified Solver for the Turnpike Problem}
+\author{Justin Lyson}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The turnpike problem asks for $n$ integer points on a line whose $\binom{n}{2}$ pairwise distances form a given
+multiset $D$. Backtracking (Skiena, Smith and Lemke, 1990) is fast on typical inputs but exponential on known
+families. We describe an open-source solver that runs a sequence of sections, each either polynomial-time or clearly
+labelled otherwise: budgeted backtracking, an exact positivity certificate for infeasibility, an anchor-and-square-root
+step, factoring of the distance polynomial, factoring after a lift to the lattice of additive relations, a
+propagation-and-LP search, and an exhaustive fallback. Every YES answer is verified, and every NO answer comes
+from a proof. Sections 1--5 decide part of the input space each. Section~6 decides every input in polynomial time if
+one stated conjecture holds. The exhaustive fallback has never been needed on any input we have run, including the
+hard families from the literature and inputs built to defeat each section. We give the methods, what is proved,
+and measurements.
+\end{abstract}
+
+\section{Problem and approach}
+
+Let $X=\{x_1<\dots<x_n\}\subset\Z$ and let $D=\Delta X$ be the multiset of the $\binom n2$ differences $x_j-x_i$,
+$i<j$. Given $D$, the \emph{turnpike problem} is to find some $X$ with $\Delta X = D$ (a \emph{realization}) or to
+show that none exists. Realizations are unique only up to translation and mirror image, and in general not even then:
+distinct \emph{homometric} sets share a distance multiset. Write $W=\max D$; every realization can be shifted
+to contain $0$ and $W$.
+
+The classical algorithm~\cite{SSL90} places points from the outside in. The largest distance not yet explained must
+join a new point to $0$ or to $W$, so each step has at most two choices. It is fast in practice. Zhang~\cite{Zhang94}
+gave inputs on which it takes exponential time. The algebraic view~\cite{RS82,SSL90} encodes $X$ as
+$A(z)=\sum_{x\in X}z^x$, so that
+\begin{equation}\label{eq:P}
+  A(z)\,A(z^{-1}) \;=\; n+\sum_{d} D(d)\,(z^d+z^{-d}) \;=:\; P_D(z),
+\end{equation}
+and realizations correspond to factors of $P_D$ with $0/1$ coefficients. Factoring is polynomial in the degree $2W$,
+so this route is pseudo-polynomial. No worst-case polynomial algorithm is known~\cite{LSS03,Dakic00}.
+
+Our solver combines several methods, each strong where the others are weak, and keeps every answer certified. It runs
+the sections below in order and stops at the first that decides (Table~\ref{tab:sections}). The source code, the test
+corpus and the benchmarks are at \repourl.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+\# & Section & Decides & Cost \\
+\midrule
+1 & budgeted backtracking & YES or NO within $n^2$ nodes & polynomial \\
+2 & positivity certificate & NO & polynomial \\
+3 & anchors and square root & YES & polynomial \\
+4 & factoring $P_D$ & YES or NO (complete) & pseudo-polynomial in $W$ \\
+5 & lattice lift and factoring & YES or NO (complete) & polynomial in $n,\log W, h$ (Thm.~\ref{thm:t3r}) \\
+6 & $T^*_k$ search & YES or NO & polynomial if Conj.~\ref{conj:st} holds \\
+7 & exhaustive backtracking & YES or NO & exponential worst case \\
+\bottomrule
+\end{tabular}
+\caption{Sections in run order. A \emph{strict} mode disables every section or option that is not polynomial
+(section 4, unprojected lifts, section 7); it may answer UNDECIDED but never wrongly.}
+\label{tab:sections}
+\end{table}
+
+\begin{proposition}[Soundness]
+Every YES answer is verified by recomputing $\Delta X$ exactly and comparing it with $D$. Every NO answer comes from
+an exhaustive search, a complete enumeration of factorizations, or an exact certificate. Floating-point values are
+used only to choose candidates, never to justify an answer.
+\end{proposition}
+
+\section{The sections}
+
+\paragraph{1. Budgeted backtracking.} The rule of~\cite{SSL90} with a budget of $n^2$ nodes (mirror images
+are pruned at the root). A run that ends within the budget is exact. Most random inputs finish in about $n$ nodes.
+
+\paragraph{2. Positivity certificate.} By~\eqref{eq:P}, on the unit circle
+\[
+  f(\theta) \;=\; |A(e^{i\theta})|^2 \;=\; n + 2\sum_d D(d)\cos(d\theta) \;\ge\; 0
+\]
+for every realizable $D$. Hence one angle with $f(\theta)<0$ proves NO.
+
+\begin{lemma}[Exact angles and aliasing]\label{lem:alias}
+For $\theta=2\pi p/q$ with integers $p,q$, $\cos(d\theta)=\cos(2\pi\,(dp \bmod q)/q)$, so the angle reduction is exact
+in integer arithmetic for distances of any size. For a grid size $N$, let $a_r=\sum_{d\equiv r \ (N)} D(d)$. Then
+$f(2\pi k/N) = n + 2\,\mathrm{Re}\sum_{r} a_r\, e^{2\pi i kr/N}$ for all $k$ simultaneously, which is one FFT of
+length $N$ after an $O(|\supp D|)$ fold.
+\end{lemma}
+
+The solver evaluates $f$ on all $N$ grid angles: one grid with $N\ge 8W$ for narrow inputs ($8W\le 2^{21}$), and three grids of sizes $2^{18}$,
+$3^{11}$, $5^8$ for wide ones, followed by a few random angles. Each candidate is then re-evaluated in ball arithmetic
+(Arb, 128 bits); NO is returned only when the whole ball is negative. The cost is polynomial in $n$ and $\log W$. A
+positivity failure is only a sufficient condition for NO. In tests it catches nearly every perturbed input at once
+(Section~\ref{sec:exp}).
+
+\paragraph{3. Anchors and square root.} Call a point set $\mathcal A\ni 0,W$ of mirror pairs $\{p,W-p\}$ an
+\emph{anchor set}. Every other point $q$ satisfies $|q-a|\in D$ for all $a\in\mathcal A$, and $q$, $W-q$ pass this
+test together. So the test yields the folded pairs, and what remains unknown is which side of each pair is used. With
+$b(z)=\sum_q z^{2q-W}$ over the chosen sides, $b+b^* = S$ (all folded pairs) and $bb^*=P$ (the autocorrelation of the
+non-anchor points, known from $D$). Hence $b$ is a root of $t^2-St+P$, that is, $b=(S+\sqrt{S^2-4P})/2$. The square
+root of a sparse polynomial is computed exactly, term by term from the top. Anchors are found greedily (a
+heuristic). The section is sound in every case, because answers are verified and failure gives UNDECIDED. It decides,
+for example, the mirror-symmetric chain of Table~
+ef{tab:tricky}, which is slow for backtracking and has a tall lift.
+
+\paragraph{4. Factoring $P_D$.} Factor $z^WP_D(z)$ over $\Z$. Reciprocation $f^*(z)=z^{\deg f}f(1/z)$ permutes the
+irreducible factors: a self-reciprocal factor occurs with even multiplicity $2m$, and $A$ contains exactly $f^m$; a
+reciprocal pair $f^e(f^*)^e$ contributes $f^j(f^*)^{e-j}$ with $0\le j\le e$~\cite{RS82}. Enumerating these tuples,
+up to the mirror symmetry $j\mapsto e-j$, finds all $0/1$ factors, so the section is complete. Candidates are first
+screened by their lowest and highest coefficients using truncated products. The cost grows with $W$, so this section
+is pseudo-polynomial; it is off in strict mode and limited to $W\le 3000$ by default.
+
+\emph{Towers.} Product sets $A(z)=A_1(z)A_2(z^s)$ are the classical source of homometric sets and of hard
+inputs. Their factor $A_2(z^s)$ is found cheaply:
+
+\begin{lemma}[Polyphase gcd]\label{lem:tower}
+Write $P(z)=\sum_{r=0}^{s-1}z^rP_r(z^s)$. A polynomial $F(z^s)$ divides $P$ if and only if $F$ divides every
+$P_r$. If $\deg A_1<s$, the product $A_1(z)G(z^s)$ has no two terms on the same exponent, so it has $0/1$
+coefficients if and only if $A_1$ and $G$ do.
+\end{lemma}
+\begin{proof}
+If $P=F(z^s)G(z)$ with $G=\sum_r z^rG_r(z^s)$, then multiplication by $F(z^s)$ preserves exponents mod $s$, so
+$P_r=FG_r$ by uniqueness of the decomposition. Conversely, $F\mid P_r$ for all $r$ gives $F(z^s)\mid P$. In
+$A_1(z)G(z^s)$ the term $z^{i+sj}$ determines $(i,j)$ when $0\le i<s$.
+\end{proof}
+
+For large degrees the solver takes the largest $s$ with $H=\gcd_rP_r\ne 1$ (each $s$ is screened by one gcd modulo a
+prime), writes $P=R(z)H(z^s)$, enumerates the $0/1$ solutions of $R$ and of $H$ separately (recursively), and combines
+them. This route only produces verified YES answers. If it finds none, the full factorization runs. On a product of
+two hard cores ($n=420$, $\deg P=7904$, $s=93$) it replaces a 17.9\,s factorization, nearly all of it modular, by
+gcds and two small factorizations taking about 0.1\,s.
+
+\paragraph{5. Lattice lift.} Let $S=\supp D$ and
+\[
+  K(D)=\{v\in\Z^S:\ v(a)+v(b)=v(a+b)\ \text{whenever } a,b,a+b\in S\}.
+\]
+The identity $v(d)=d$ lies in $K(D)$. Take a reduced basis $k_1,\dots,k_r$ of $K(D)$, set
+$c(d)=(k_1(d),\dots,k_r(d))\in\Z^r$, and call $h=\max|k_i(d)|$ the height of the lift.
+
+\begin{lemma}[Every realization lifts]\label{lem:lift}
+If $Y\ni 0$ realizes $D$, put $L(0)=0$ and $L(y)=c(y)$ for $y\in Y\setminus\{0\}$. Then $L(y')-L(y)=c(y'-y)$ for all
+$y<y'$ in $Y$. Hence $A_L(u)=\sum_{y}u^{L(y)}$ is a $0/1$ factor of the Laurent polynomial
+$P_L(u)=n+\sum_d D(d)(u^{c(d)}+u^{-c(d)})$ with $P_L=A_LA_L^*$. Since $c$ is injective, every $0/1$ factor decodes to
+at most one point set.
+\end{lemma}
+\begin{proof}
+For $0<y<y'$ in $Y$ the values $y$, $y'-y$, $y'$ all lie in $S$ and $y+(y'-y)=y'$, so $c(y')=c(y)+c(y'-y)$. The case
+$y=0$ is immediate. Injectivity holds because some integer combination of the coordinates is the identity.
+\end{proof}
+
+$K(D)$ is computed exactly. Values with no decomposition $s=a+b$ in $S$ are free parameters, and every other value is an
+integer combination of them. The relations are then imposed by iterated integer-kernel refinement, with saturation and
+LLL at the end. Inputs whose gaps are ``a large step plus small noise'' have a lift of small height even when $W$ is
+huge, and the lift exposes that structure. By default $P_L$ is factored directly in its $r$ variables. In strict mode a
+random integer map $\pi:\Z^r\to\Z^3$, injective on $\{\pm c(d)\}$ and never $0$, projects $P_L$ to three variables
+first.
+
+\begin{theorem}[Projected lift; internally reviewed]\label{thm:t3r}
+With the projection to $3$ variables, section 5 is complete (it finds every realization, so an empty result proves NO)
+and runs in time polynomial in $n$, $\log W$ and $h$.
+\end{theorem}
+
+Completeness holds because the true $\pi(A_L)$ is among the enumerated factor products. Spurious relations created by
+$\pi$ only add candidates, which verification rejects. The height $h$ is not polynomial in general: on the doubling
+chain $1,2,4,\dots$ the lift has $h=W=2^L$. Such rigid chains are instead decided by section 1 or section 3.
+
+\paragraph{6. The $T^*_k$ search.} Section 6 walks a tree of candidate classes $c=\min(p,W-p)$ in increasing order, with
+two children at each branching class. Every child is tested by exact propagation on a 0/1 face system, by a linear
+program whose refutations are confirmed by an exactly checked integer Farkas certificate, and, when two children
+survive, by $k$-level probing with the LP inside every leg. The search never backtracks.
+
+\begin{conjecture}[$\mathrm{ST}_k$]\label{conj:st}
+For fixed $k$, every child that does not extend to a realization, of a node that does, is refuted by the $T^*_k$ test.
+\end{conjecture}
+
+\begin{theorem}\label{thm:st}
+If Conjecture~\ref{conj:st} holds for some fixed $k$, the search decides every input after at most $1+2(n-1)$ child
+tests, each of polynomial cost, so the turnpike problem is solvable in polynomial time.
+\end{theorem}
+
+The steps of this argument other than Conjecture~\ref{conj:st} have written proofs that have been reviewed
+independently. For $k=3$ we know of no counterexample. If a wrong child ever survives, the solver detects it (the
+subtree dies while a sibling survived), reports it, and continues with section 7.
+
+\paragraph{7. Fallback.} Unbudgeted backtracking. When it runs, the report says so and asks for the input to be
+submitted as an issue.
+
+\section{Experiments}\label{sec:exp}
+
+All times are wall-clock times on a desktop PC (Python 3.10, python-flint, HiGHS, numba), in process, and include
+the sections that ran before the deciding one.
+
+\paragraph{Corpus.} 97 cases: random sets up to $n=300$ and $W=10^9$; homometric pairs and their products; Zhang's
+family; hard narrow cores; rigid chains up to $W=2^{64}$; mirror-symmetric chains up to $W\approx 4\cdot10^{12}$;
+mirrored products; and 37 inputs with no solution. All 97 are decided correctly, in 1.8\,s in total. By default the
+deciding sections are quick search (70), lift (15), positivity (10) and factoring (2). Strict mode also decides all 97,
+using only polynomial sections (quick 70, lift 17, positivity 10). The fallback was never used.
+
+\paragraph{Cross-check.} 16{,}000 random small inputs (solvable, perturbed, narrow and wide products) were each solved
+in default and strict mode; 4{,}000 of them were also solved with all solutions requested and with the algebraic
+sections alone. Status and complete solution sets match plain exhaustive search in every case.
+
+\paragraph{Hard and large inputs.} Table~\ref{tab:tricky}. Each YES case is followed by no-solution variants (one
+distance moved by $1$); all 28 variants are decided by positivity (27) or quick search (1), in at most 1.0\,s each.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}lrrlr@{}}
+\toprule
+Input & $n$ & $W$ & decided by & time (s) \\
+\midrule
+\texttt{zhang\_nz15\_W15000} & 77 & 15{,}000 & lift & 0.22 \\
+\texttt{zhang\_nz15\_wide} & 77 & $1.0\cdot 10^{9}$ & lift & 0.25 \\
+\texttt{zhang\_nz19\_W19000} & 97 & 19{,}000 & lift & 0.21 \\
+\texttt{zhang\_nz19\_wide} & 97 & $1.0\cdot 10^{9}$ & lift & 0.32 \\
+\texttt{zhang\_nz25\_W25000} & 127 & 25{,}000 & lift & 0.46 \\
+\texttt{zhang\_nz25\_wide} & 127 & $1.0\cdot 10^{9}$ & lift & 0.60 \\
+\texttt{HM36B4} & 88 & 151 & factor & 0.19 \\
+\texttt{HM42B5} & 106 & 183 & factor & 0.29 \\
+\texttt{HM48B6} & 124 & 215 & factor & 0.48 \\
+\texttt{N21xN20\_narrow} & 420 & 3{,}952 & lift & 1.71 \\
+\texttt{N21xN20\_wide} & 420 & $4.2\cdot 10^{7}$ & lift & 1.15 \\
+\texttt{HM24B2xN20\_wide} & 1040 & $4.2\cdot 10^{8}$ & lift & 1.55 \\
+\texttt{mirprod\_J16} & 73 & $2.1\cdot 10^{7}$ & quick & 0.00 \\
+\texttt{symchain\_HM36\_L40} & 172 & $4.4\cdot 10^{12}$ & vieta & 0.54 \\
+\texttt{random\_n2000} & 2000 & $1.0\cdot 10^{9}$ & quick & 0.35 \\
+\texttt{random\_n5000} & 5000 & $1.0\cdot 10^{12}$ & quick & 3.22 \\
+\bottomrule
+\end{tabular}
+\caption{Hard and large inputs (\texttt{bench/tricky.py}). On the $n=420$ products, plain backtracking had not finished
+after $10^7$--$10^8$ nodes. Zhang's family with $nz=13$ takes 58\,s and 708{,}664 nodes for plain backtracking, against
+0.15\,s here.}
+\label{tab:tricky}
+\end{table}
+
+\section{Status}
+
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Statement & Status \\
+\midrule
+Soundness of every answer & proved (by construction) \\
+Positivity certificate, Lemma~\ref{lem:alias}; polyphase gcd, Lemma~\ref{lem:tower} & proved (elementary) \\
+Lift completeness, Lemma~\ref{lem:lift} & proved \\
+Projected lift polynomial in $n,\log W,h$, Theorem~\ref{thm:t3r} & proved, internally reviewed \\
+$\mathrm{ST}_k$ implies polynomial time, Theorem~\ref{thm:st} & proved, internally reviewed \\
+Conjecture $\mathrm{ST}_k$ ($k=3$) & open; no counterexample known \\
+Fallback never needed & tested on every input above, not proved \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Speed on benchmarks is evidence of practicality, not a complexity bound. The one missing step to a worst-case
+polynomial algorithm is Conjecture~\ref{conj:st}. Any input that reaches section~7 is a counterexample to it, or a
+gap in the earlier sections, and we would like to see it.
+
+\begin{thebibliography}{9}
+\bibitem{SSL90} S.~S.~Skiena, W.~D.~Smith, P.~Lemke. Reconstructing sets from interpoint distances.
+  \emph{Proc.\ 6th ACM Symposium on Computational Geometry}, 332--339, 1990.
+\bibitem{LSS03} P.~Lemke, S.~S.~Skiena, W.~D.~Smith. Reconstructing sets from interpoint distances. In
+  \emph{Discrete and Computational Geometry: The Goodman--Pollack Festschrift}, 597--631. Springer, 2003.
+\bibitem{RS82} J.~Rosenblatt, P.~D.~Seymour. The structure of homometric sets. \emph{SIAM J.\ Algebraic Discrete
+  Methods} 3(3):343--350, 1982.
+\bibitem{Zhang94} Z.~Zhang. An exponential example for a partial digest mapping algorithm. \emph{J.\ Computational
+  Biology} 1(3):235--239, 1994.
+\bibitem{Dakic00} T.~Daki\'c. \emph{On the Turnpike Problem}. PhD thesis, Simon Fraser University, 2000.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+bench/out/
+# not published: an older benchmark run, and a test that needs the private research tree
+bench/results_lead.md
+tests/test_tstar_equiv.py
+# LaTeX intermediates
+paper/*.aux
+paper/*.log
+paper/*.out

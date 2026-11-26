@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "turnpike-solver: reconstructing points on a line from pairwise distances"
+authors:
+  - name: "Justin Lyson"
+version: 0.1.0
+date-released: 2026-11-26
+license: Apache-2.0
+repository-code: "https://github.com/justinlyson/turnpike-solver"
