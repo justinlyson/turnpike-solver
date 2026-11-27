@@ -328,12 +328,12 @@ class ClassTree:
         E0 = sp.csr_matrix((0, Aeq.shape[1]), dtype=np.int64)
         b0 = np.zeros(0, np.int64)
         z0 = np.zeros(0)
-        s0, ray0 = LP.hsolve(Aeq, beq, E0, b0, self._iters(Aeq))
+        s0, ray0 = LP.hsolve(Aeq, beq, E0, b0, self._iters(Aeq), self.deadline)
         if s0 == "unknown":
             st["lp_unknown"] += 1
         if s0 == "infeasible":
             for K in SUB_RAY_K:
-                yk = LP.sub_ray(Aeq, beq, K, self._iters)
+                yk = LP.sub_ray(Aeq, beq, K, self._iters, self.deadline)
                 if yk is not None and LP.certify_either_sign(Aeq, beq, E0, b0, yk, z0, CERT_BITS):
                     st["lp_refuted"] += 1
                     return True
@@ -342,7 +342,7 @@ class ClassTree:
                 return True
             st["lp_cert_fail"] += 1
         meq = Aeq.shape[0]
-        s1, ray = LP.hsolve(Aeq, beq, Aub, bub, self._iters(sp.vstack([Aeq, Aub])))
+        s1, ray = LP.hsolve(Aeq, beq, Aub, bub, self._iters(sp.vstack([Aeq, Aub])), self.deadline)
         if s1 == "unknown":
             st["lp_unknown"] += 1
         if s1 != "infeasible":

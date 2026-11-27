@@ -89,7 +89,8 @@ python -m turnpike [FILE] [-d "..."] [--points] [--all] [--json] [--strict]
 
 - `--points` reads the numbers as points and computes their distances first (handy for testing).
 - `--all` lists every realization, up to mirror image. Different realizations with the same distances
-  (homometric sets) exist.
+  (homometric sets) exist. If sections are switched off or time runs out so that no section that lists every
+  realization finishes, the report says the list may be incomplete (`complete: false` in JSON).
 - `--time-limit` returns TIMEOUT when the time is up, never a wrong answer.
 - Exit codes: 0 = YES, 1 = NO, 3 = UNDECIDED or TIMEOUT, 2 = invalid input.
 

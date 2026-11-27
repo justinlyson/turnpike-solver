@@ -256,7 +256,7 @@ class CloseK:
         W = T.W
         Ae, be, Au, bu, coll, nq_face = rule_system(T, face)
         self.node = PropNode(Ae, be, Au, bu, coll)
-        self.lp = FaceLP(Ae, be, Au, bu, nq_face)
+        self.lp = FaceLP(Ae, be, Au, bu, nq_face, deadline)
         self.order = sorted(self.node.pts, key=lambda i: min(coll[i], W - coll[i]))   # near-end columns first
         self.deadline = deadline
 

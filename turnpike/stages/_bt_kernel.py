@@ -26,7 +26,8 @@ def _bucket_index(vals, W):
 @_nb.njit(cache=True)
 def _search_nb(vals, cnt0, n, W, node_limit, want_all, max_sols):
     """Iterative DFS. vals: distinct distances ascending (int64); cnt0: multiplicities.
-    Returns (status, nodes, sols[n_found, n]): status 0 = exhausted, 1 = stopped at first solution, 2 = node limit."""
+    Returns (status, nodes, sols[n_found, n]): status 0 = exhausted, 1 = stopped at first solution, 2 = node limit,
+    3 = solution buffer full (want_all only; the list is incomplete and must not be used)."""
     m = vals.shape[0]
     start, scale = _bucket_index(vals, W)
 
@@ -52,10 +53,11 @@ def _search_nb(vals, cnt0, n, W, node_limit, want_all, max_sols):
             p_ -= 1
         ptr_st[depth] = p_
         if p_ < 0:                               # all distances explained: a realization
-            if nsol < max_sols:
-                for i in range(n):
-                    sols[nsol, i] = placed[i]
-                nsol += 1
+            if nsol == max_sols:                 # buffer full: stop, the caller reruns without a cap
+                return 3, nodes, sols[:nsol]
+            for i in range(n):
+                sols[nsol, i] = placed[i]
+            nsol += 1
             if not want_all:
                 return 1, nodes, sols[:nsol]
             depth -= 1

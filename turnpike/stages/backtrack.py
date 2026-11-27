@@ -30,6 +30,7 @@ def _search_py(counts: dict, n: int, W: int, node_limit, all_solutions: bool, de
     keys = sorted((d for d in cnt), reverse=True)
     placed = [0, W]
     sols: list = []
+    seen: set = set()                           # one point set is often reached along many paths: keep it once
     work = {"nodes": 0}
     limit = node_limit if node_limit is not None else -1
 
@@ -37,7 +38,10 @@ def _search_py(counts: dict, n: int, W: int, node_limit, all_solutions: bool, de
         while ptr < len(keys) and cnt[keys[ptr]] == 0:
             ptr += 1
         if ptr == len(keys):
-            sols.append(sorted(placed))
+            key = tuple(sorted(placed))
+            if key not in seen:
+                seen.add(key)
+                sols.append(list(key))
             if not all_solutions:
                 raise _Stop
             return
@@ -66,13 +70,15 @@ def _search_py(counts: dict, n: int, W: int, node_limit, all_solutions: bool, de
             for d in used:
                 cnt[d] += 1
 
-    box = {"reason": None}
+    box = {"reason": None, "error": None}
 
     def go():
         try:
             rec(0, True)
         except _Stop as e:
             box["reason"] = e.args[0] if e.args else None
+        except BaseException as e:              # on the worker thread an error would otherwise vanish and read as NO
+            box["error"] = e
 
     old = sys.getrecursionlimit()
     sys.setrecursionlimit(max(old, 4 * n + 1000))
@@ -90,6 +96,8 @@ def _search_py(counts: dict, n: int, W: int, node_limit, all_solutions: bool, de
                 threading.stack_size(old_ss)
     finally:
         sys.setrecursionlimit(old)
+    if box["error"] is not None:
+        raise box["error"]
     return sols, work, box["reason"]
 
 
@@ -120,12 +128,18 @@ def search(inst, node_limit=None, all_solutions=False, deadline=None, compiled=T
         vals, cnt0 = inst.arrays()
         lim = -1 if node_limit is None else int(node_limit)
         st, nodes, sols = kern(vals, cnt0, n, W, lim, all_solutions, 4096 if all_solutions else 1)
-        sols = [sorted(int(v) for v in row) for row in sols]
-        work = {"nodes": int(nodes), "compiled": 1}
-        if st == 2:
-            return "LIMIT", sols, work
-        return ("YES" if sols else "NO"), sols, work
-    sols, work, reason = _search_py(inst.counts, n, W, node_limit, all_solutions, deadline)
+        if st == 3:                             # more hits than the kernel's buffer holds: rerun uncapped
+            sols, work, reason = _search_py(inst.counts, n, W, node_limit, all_solutions, deadline)
+            work["compiled_overflow"] = 1
+        else:
+            sols = list({tuple(sorted(int(v) for v in row)): None for row in sols})
+            sols = [list(t) for t in sols]
+            work = {"nodes": int(nodes), "compiled": 1}
+            if st == 2:
+                return "LIMIT", sols, work
+            return ("YES" if sols else "NO"), sols, work
+    else:
+        sols, work, reason = _search_py(inst.counts, n, W, node_limit, all_solutions, deadline)
     if reason == "limit":
         return "LIMIT", sols, work
     if reason == "time":

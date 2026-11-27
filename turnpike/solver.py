@@ -79,6 +79,7 @@ def solve(data, options: Options | None = None) -> Report:
     rep.attempts.append(StageAttempt("preprocess", 0, "POLY", "DONE", 0.0, {"gcd": g}))
 
     found: dict = {}                                   # canonical tuple -> points (original scale)
+    complete = False                                   # all_solutions: a section that lists every realization decided
     ctx = {"deadline": deadline}
     for sec, (name, loader, cost, flag) in enumerate(_ORDER, start=1):
         if not getattr(opts, flag):
@@ -120,6 +121,7 @@ def solve(data, options: Options | None = None) -> Report:
                 found.setdefault(tuple(s), s)
             if not opts.all_solutions or _is_complete(name, res):
                 rep.status, rep.decided_by = "YES", name
+                complete = bool(opts.all_solutions)
                 break
         elif res.status == "NO":
             if found:                                  # contradiction: a verified YES exists
@@ -132,8 +134,10 @@ def solve(data, options: Options | None = None) -> Report:
             rep.status = "TIMEOUT"
             break
 
+    if opts.all_solutions and found:
+        rep.complete = complete
     if found and rep.status != "YES":
-        # all_solutions requested but only partial sections answered: still a YES
+        # all_solutions requested but only partial sections answered: still a YES, flagged complete = False
         rep.status = "YES"
         rep.decided_by = rep.decided_by or next(a.name for a in rep.attempts if a.outcome == "YES")
     if found:

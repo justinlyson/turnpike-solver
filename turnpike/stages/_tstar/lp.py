@@ -121,8 +121,19 @@ def _stack(Aeq, beq, Aub, bub):
     return A, lo, hi
 
 
-def hsolve(Aeq, beq, Aub, bub, iters: int):
-    """Feasibility of P by HiGHS dual simplex with an ITERATION limit (one thread; deterministic).
+def _cap(seconds, deadline):
+    """A HiGHS time limit no later than the solver's deadline (None: `seconds` unchanged, possibly None = no limit).
+    Hitting it only turns an answer into 'unknown', which never cuts."""
+    rem = None if deadline is None else deadline.remaining()
+    if rem is None:
+        return seconds
+    rem = max(rem, 1e-3)
+    return rem if seconds is None else min(seconds, rem)
+
+
+def hsolve(Aeq, beq, Aub, bub, iters: int, deadline=None):
+    """Feasibility of P by HiGHS dual simplex with an ITERATION limit (one thread; deterministic). With a deadline,
+    also a time limit at the deadline (a run that hits it reports 'unknown').
 
     Returns ('infeasible', dual ray or None) / ('feasible', None) / ('unknown', None).  Floating point: never cuts by itself.
     """
@@ -134,6 +145,9 @@ def hsolve(Aeq, beq, Aub, bub, iters: int):
     h.setOptionValue("solver", "simplex")
     h.setOptionValue("threads", 1)
     h.setOptionValue("simplex_iteration_limit", int(iters))
+    tl = _cap(None, deadline)
+    if tl is not None:
+        h.setOptionValue("time_limit", float(tl))
     h.passModel(_highs_model(A, lo, hi, np.zeros(nv), np.ones(nv), np.zeros(nv)))
     h.run()
     s = h.getModelStatus()
@@ -155,7 +169,7 @@ def iteration_limit(A, factor: int, floor: int) -> int:
     return factor * (A.shape[0] + A.shape[1]) + floor
 
 
-def sub_ray(Aeq, beq, K: int, iters_of):
+def sub_ray(Aeq, beq, K: int, iters_of, deadline=None):
     """Dual ray of the sub-system formed by the rows of Aeq with at most K nonzeros (and the columns they meet).
 
     A sub-system of the equality stage: if it is infeasible, so is the face.  The ray is padded with zeros to all rows of
@@ -170,7 +184,8 @@ def sub_ray(Aeq, beq, K: int, iters_of):
     if len(cols) == 0:
         return None
     As = As[:, cols].tocsr()
-    s, ray = hsolve(As, beq[ri], sp.csr_matrix((0, len(cols)), dtype=np.int64), np.zeros(0, np.int64), iters_of(As))
+    s, ray = hsolve(As, beq[ri], sp.csr_matrix((0, len(cols)), dtype=np.int64), np.zeros(0, np.int64), iters_of(As),
+                     deadline)
     if s != "infeasible" or ray is None or len(ray) != len(ri):
         return None
     full = np.zeros(A.shape[0])
@@ -196,9 +211,10 @@ class FaceLP:
     FARKAS_TIME = 300.0
     POOL = 64
 
-    def __init__(self, Aeq, beq, Aub, bub, nq_face: int):
+    def __init__(self, Aeq, beq, Aub, bub, nq_face: int, deadline=None):
         import highspy
         self.hs = highspy
+        self.deadline = deadline                # every HiGHS run is also capped at the solver's deadline
         self.Af = sp.csc_matrix(Aeq[:nq_face, :], dtype=np.int64)
         self.bf = np.asarray(beq[:nq_face], np.int64)
         self.Au = sp.csc_matrix(Aub, dtype=np.int64)
@@ -245,7 +261,7 @@ class FaceLP:
         h = _new_highs(hs)
         h.setOptionValue("output_flag", False)
         h.setOptionValue("solver", solver)
-        h.setOptionValue("time_limit", float(tl))
+        h.setOptionValue("time_limit", float(_cap(tl, self.deadline)))
         if solver == "ipm":
             h.setOptionValue("run_crossover", "on" if cost is not None else "off")
         nv = A.shape[1]
@@ -287,7 +303,7 @@ class FaceLP:
             self.h.changeColsBounds(len(ch), ch.astype(np.int32), L[ch], H[ch])
             self.curL[ch] = L[ch]
             self.curH[ch] = H[ch]
-        self.h.setOptionValue("time_limit", self.WARM_TIME)
+        self.h.setOptionValue("time_limit", float(_cap(self.WARM_TIME, self.deadline)))
         self.h.run()
         s = self.h.getModelStatus()
         if s == MS.kOptimal:

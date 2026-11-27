@@ -15,6 +15,13 @@ from .options import Options
 from .solver import solve
 
 
+def _decode(raw: bytes) -> str:
+    """UTF-8 (with or without a byte-order mark) or UTF-16 (what Windows PowerShell 5.1 writes with '>')."""
+    if raw[:2] in (bytes([0xFF, 0xFE]), bytes([0xFE, 0xFF])):     # UTF-16 byte-order marks
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="turnpike", description="Reconstruct points on a line from pairwise distances.")
     ap.add_argument("file", nargs="?", help="input file (default: standard input)")
@@ -36,17 +43,17 @@ def main(argv=None) -> int:
     ap.add_argument("--verbose", "-v", action="store_true")
     a = ap.parse_args(argv)
 
-    if a.distances is not None:
-        text = a.distances
-    elif a.file:
-        with open(a.file, encoding="utf-8") as f:
-            text = f.read()
-    else:
-        text = sys.stdin.read()
     try:
+        if a.distances is not None:
+            text = a.distances
+        elif a.file:
+            with open(a.file, "rb") as f:
+                text = _decode(f.read())
+        else:
+            text = _decode(sys.stdin.buffer.read())
         nums = parse_numbers(text)
         inst = Instance.from_points(nums) if a.points else Instance.from_distances(nums)
-    except InvalidInput as e:
+    except (InvalidInput, OSError, UnicodeError) as e:
         print(f"invalid input: {e}", file=sys.stderr)
         return 2
 

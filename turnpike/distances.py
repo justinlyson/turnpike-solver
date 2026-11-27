@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -17,9 +18,33 @@ class InvalidInput(ValueError):
     """The input cannot be a turnpike distance multiset (wrong count, non-integer, non-positive, ...)."""
 
 
+def _as_int(x, what: str = "value") -> int:
+    """x as a Python int, or InvalidInput if x is not exactly an integer (1.5, np.float32(2.5), Fraction(3, 2), True,
+    '7' are all rejected; 2.0, np.int64(2), Decimal('2') are accepted)."""
+    if isinstance(x, (bool, np.bool_, str, bytes)):
+        raise InvalidInput(f"{what} {x!r} is not an integer")
+    try:
+        v = int(x)
+        exact = bool(v == x)
+    except (TypeError, ValueError, OverflowError, ArithmeticError):
+        exact = False
+    if not exact:
+        raise InvalidInput(f"{what} {x!r} is not an integer")
+    return v
+
+
+def _all_ints(xs) -> bool:
+    return all(type(x) is int or isinstance(x, np.integer) for x in xs)
+
+
+def _int_list(xs, what: str) -> list:
+    xs = list(xs)
+    return [int(x) for x in xs] if _all_ints(xs) else [_as_int(x, what) for x in xs]
+
+
 def distances_of(points: Sequence[int]) -> Counter:
     """Multiset of pairwise distances of `points` (exact integers; numpy fast path when values fit in int64)."""
-    pts = sorted(int(p) for p in points)
+    pts = sorted(_int_list(points, "point"))
     n = len(pts)
     if n < 2:
         return Counter()
@@ -71,13 +96,14 @@ class Instance:
     @classmethod
     def from_distances(cls, dists: Iterable[int] | dict) -> "Instance":
         if isinstance(dists, dict):
-            items = [(int(d), int(m)) for d, m in dists.items() if int(m) != 0]
-            c = Counter(dict(items))
+            c = Counter()
+            for d, m in dists.items():                 # 2 and 2.0 are the same distance: add, don't overwrite
+                c[_as_int(d, "distance")] += _as_int(m, "multiplicity")
+            c = Counter({d: m for d, m in c.items() if m != 0})
         else:
             dl = list(dists)
-            for d in dl:
-                if isinstance(d, float) and not d.is_integer():
-                    raise InvalidInput(f"distance {d} is not an integer")
+            if not _all_ints(dl):
+                dl = [_as_int(d, "distance") for d in dl]
             if len(dl) > 5000 and all(isinstance(d, (int, np.integer)) for d in dl) and max(dl) < 2 ** 62 and min(dl) > -(2 ** 62):
                 v, k = np.unique(np.asarray(dl, dtype=np.int64), return_counts=True)
                 return cls._from_arrays(v, k.astype(np.int64))
@@ -110,7 +136,7 @@ class Instance:
 
     @classmethod
     def from_points(cls, points: Iterable[int]) -> "Instance":
-        pts = sorted(int(p) for p in points)
+        pts = sorted(_int_list(points, "point"))
         if len(set(pts)) != len(pts):
             raise InvalidInput("points must be distinct")
         n = len(pts)
@@ -197,14 +223,17 @@ _SPLIT = re.compile(r"[\s,;\[\]\(\)\{\}]+")
 def parse_numbers(text: str) -> list[int]:
     """Read integers separated by whitespace, commas, semicolons or brackets."""
     out = []
-    for tok in _SPLIT.split(text.strip()):
+    for tok in _SPLIT.split(text.replace(chr(0xFEFF), "").strip()):
         if not tok:
             continue
         try:
             v = int(tok)
         except ValueError:
-            f = float(tok)
-            if not f.is_integer():
+            try:                                    # '12.0', '1e3': exact decimal arithmetic, never float
+                f = Decimal(tok)
+            except InvalidOperation:
+                raise InvalidInput(f"'{tok}' is not a number") from None
+            if not f.is_finite() or f != f.to_integral_value():
                 raise InvalidInput(f"'{tok}' is not an integer") from None
             v = int(f)
         out.append(v)

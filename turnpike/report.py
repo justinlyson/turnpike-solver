@@ -23,6 +23,8 @@ class Report:
     status: str                                   # YES | NO | UNDECIDED | TIMEOUT
     points: list | None = None                    # one realization (canonical: starts at 0, lexicographically <= mirror)
     solutions: list = field(default_factory=list) # all realizations found (up to mirror), when requested
+    complete: bool | None = None                  # all_solutions only: True = `solutions` is every realization;
+                                                  # False = only partial sections answered, more may exist
     decided_by: str | None = None
     attempts: list = field(default_factory=list)
     fallback_used: bool = False                   # the exponential section ran
@@ -48,7 +50,10 @@ class Report:
         if self.points is not None:
             pts = self.points if len(self.points) <= 40 else self.points[:20] + ["..."] + self.points[-5:]
             lines.append(f"points      : {pts}")
-        if len(self.solutions) > 1:
+        if self.complete is False:
+            lines.append(f"realizations: {len(self.solutions)} found (up to mirror image); the list MAY BE INCOMPLETE:"
+                         " no section that lists every realization finished")
+        elif len(self.solutions) > 1:
             lines.append(f"realizations: {len(self.solutions)} (up to mirror image)")
         lines.append(f"decided by  : {self.decided_by}")
         lines.append("sections    :")
